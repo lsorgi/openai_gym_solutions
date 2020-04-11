@@ -1,0 +1,11 @@
+pytest
+numpy
+opencv-python
+scikit-image
+scikit-learn
+gym
+LiveStats
+tensorflow
+h5py
+Keras
+matplotlib
