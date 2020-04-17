@@ -5,7 +5,7 @@ scikit-image
 scikit-learn
 gym
 LiveStats
-tensorflow
+tensorflow==1.14
 h5py
 Keras
 matplotlib

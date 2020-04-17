@@ -3,6 +3,9 @@ from keras import models
 from keras import optimizers
 from keras import backend as K
 
+
+import tensorflow as tf
+
 import numpy as np
 import random
 
@@ -20,11 +23,11 @@ class ActorCriticAgent(object):
     def __init__(self,
                  state_dim,
                  action_dim,
-                 discount_rate=0.99,
-                 hidden_dims=[8, 8],
-                 learning_rate=0.0001,
-                 max_memory_sz=5000,
-                 exploration_rate=0.1):
+                 discount_rate,
+                 hidden_dims,
+                 learning_rate,
+                 replay_memory_sz,
+                 batch_sz):
         """
 
         :param state_dim:
@@ -32,115 +35,123 @@ class ActorCriticAgent(object):
         :param discount_rate:
         :param hidden_dims:
         :param learning_rate:
-        :param exploration_rate:
         """
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.discount_rate = discount_rate
-        self.max_memory_sz = max_memory_sz
-        self.exploration_rate = exploration_rate
-        self.batch_sz = 24
-        self.state_memory = []
-        self.action_memory = []
-        self.value_memory = []
+        self.replay_memory_sz = replay_memory_sz
+        self.batch_size = batch_sz
+        self.state_memory = np.zeros(shape=(self.replay_memory_sz, self.state_dim), dtype=float)
+        self.action_memory = np.zeros(shape=(self.replay_memory_sz, self.action_dim), dtype=float)
+        self.value_memory = np.zeros(shape=self.replay_memory_sz, dtype=float)
+        self.memory_index = 0
+        self.step_index = 0
         # build models
-        self.policy, self.actor, self.critic = self._build_models(hidden_dims, learning_rate)
-        #
-        self.best_reward = 0
-        self.best_reward_age = 0
+        self.policy, self.critic, self.actor, self.advantage_ph = self._build_models(hidden_dims, learning_rate)
+        self.critic_training_memory = list()
 
     def _build_models(self, hidden_dims, learning_rate):
         #
         # build policy
-        state_l = layers.Input(shape=(self.state_dim,), name="state_l")
-        hidden_l = layers.Dense(units=hidden_dims[0], activation='relu')(state_l)
+        state_ph = layers.Input(shape=(self.state_dim,))
+        hidden = layers.Dense(units=hidden_dims[0], activation='relu')(state_ph)
         for jh in np.arange(1, len(hidden_dims)):
-            hidden_l = layers.Dense(units=hidden_dims[jh], activation='relu')(hidden_l)
-        action_l = layers.Dense(units=self.action_dim, activation='tanh', name="action_l", use_bias=False)(hidden_l)
-        policy_model = models.Model(input=[state_l], output=[action_l], name="policy_model")
+            hidden = layers.Dense(units=hidden_dims[jh], activation='relu')(hidden)
+        action = layers.Dense(units=self.action_dim, activation='tanh', use_bias=False)(hidden)
+        policy_model = models.Model(input=[state_ph], output=[action], name="policy_model")
         policy_model.summary()
         #
-        # build actor
-        advantage_l = layers.Input(shape=(1,), name="reward_delta_l")
-        
-        def custom_loss(y_true, y_pred):
-            learn_loss = K.mean(K.square(y_true - y_pred)) * advantage_l
-            return learn_loss
-
-        actor_model = models.Model(input=[state_l, advantage_l], output=[action_l], name='actor_model')
-        actor_model.compile(optimizer=optimizers.Adam(learning_rate=learning_rate), loss=custom_loss)
-        actor_model.summary()
-        #
         # build critic
-        inaction_l = layers.Input(shape=(self.action_dim,))
-        state_action = layers.concatenate([state_l, inaction_l])
-        hidden_l = layers.Dense(units=hidden_dims[0], activation='relu')(state_action)
+        action_ph = layers.Input(shape=(self.action_dim,))
+        state_action = layers.concatenate([state_ph, action_ph])
+        hidden = layers.Dense(units=hidden_dims[0], activation='relu')(state_action)
         for jh in np.arange(1, len(hidden_dims)):
-            hidden_l = layers.Dense(units=hidden_dims[jh], activation='relu')(hidden_l)
-        value_l = layers.Dense(units=1, activation='sigmoid', name="value_l", use_bias=False)(hidden_l)
-        critic_model = models.Model(input=[state_l, inaction_l], output=[value_l], name='critic_model')
-        critic_model.compile(optimizer=optimizers.Adam(learning_rate=learning_rate), loss='mean_squared_error')
+            hidden = layers.Dense(units=hidden_dims[jh], activation='relu')(hidden)
+        value = layers.Dense(units=1, activation='sigmoid', name="value_l", use_bias=False)(hidden)
+        critic_model = models.Model(input=[state_ph, action_ph], output=[value], name='critic_model')
+        critic_model.compile(optimizer=optimizers.Adam(learning_rate=learning_rate), loss='mse')
         critic_model.summary()
         #
-        return policy_model, actor_model, critic_model
-    
+        # build actor
+        advantage_ph = layers.Input(shape=(1,), name="advantage")
+
+        def custom_loss(y_true, y_pred):
+            learn_loss = K.mean(K.square(y_true - y_pred)) * advantage_ph
+            return learn_loss
+
+        actor_model = models.Model(input=[state_ph, advantage_ph], output=[action], name='actor_model')
+        actor_model.compile(optimizer=optimizers.Adam(learning_rate=learning_rate), loss=custom_loss)
+        actor_model.summary()
+
+        if False:
+            value_ = critic_model([state_ph, action])
+            policy_learn_loss = -K.log(K.clip(value_, 1e-8, 1.0))
+            actor_gradients = K.gradients(loss=policy_learn_loss, variables=policy_model.trainable_weights)
+            opt = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+            policy_train_function = opt.apply_gradients(zip(actor_gradients, policy_model.trainable_weights))
+
+        return policy_model, critic_model, actor_model, advantage_ph
+
     def choose_action(self, state: np.array):
-        if np.random.uniform(0.0, 1.0) < self.exploration_rate:
-            action = np.array(np.random.uniform(-1.0, 1.0, size=self.action_dim))
-        else:
-            state_ = state[np.newaxis, :]  # add batch dimension
-            action = self.policy.predict(x=state_)[0]
+        j = (self.memory_index - 1) % self.replay_memory_sz
+        current_value = self.value_memory[j]
+        expected_value_th = current_value + (1.0 - current_value) / 2.0
+        # try policy
+        action = self.policy.predict(x=state[np.newaxis, :])[0]
+        expected_value = self.critic.predict(x=[state[np.newaxis, :], action[np.newaxis, :]])[0]
+        if expected_value >= expected_value_th:
+            return action
+        # try random action
+        rng = 1.0 - current_value
+        action = np.array(np.random.uniform(-rng, +rng, size=self.action_dim))
+        #
         return action
 
     def train(self, state: np.array, action: np.array, reward: np.float):
         # update memory
-        n_samples = len(self.value_memory)
-        if n_samples == 0:
-            self.state_memory = [state]
-            self.action_memory = [action]
-            self.value_memory = [reward]
-        else:
-            self.state_memory.append(state)
-            self.action_memory.append(action)
-            self.value_memory.append(0)
-            n_samples += 1
-            r = reward
-            for j in np.arange(n_samples - 1, -1, -1):
-                n = (n_samples - 1 - j)
-                self.value_memory[j] = ((self.value_memory[j] * n) + r) / (n + 1)
-                r *= self.discount_rate            
-            if len(self.value_memory) > self.max_memory_sz:
-                self.state_memory.pop(0)
-                self.action_memory.pop(0)
-                self.value_memory.pop(0)
-                n_samples -= 1
-        if n_samples < self.batch_sz:
-            return
-        # train critic
-        state_memory_cpy = np.array(self.state_memory)
-        action_memory_cpy = np.array(self.action_memory)
-        value_memory_cpy = np.array(self.value_memory)
-        training_indexes = random.choices(np.arange(n_samples), k=self.batch_sz)
-        cost = self.critic.train_on_batch(
-                x=[state_memory_cpy[training_indexes, :], action_memory_cpy[training_indexes]],
-                y=value_memory_cpy[training_indexes])
-        # train actor
-        state = state[np.newaxis, :]
-        action = action[np.newaxis, :]
-        future_reward = self.critic.predict(x=[state, action])[0]
-        advantage = np.exp(future_reward)[np.newaxis, :]
-        cost = self.actor.train_on_batch(
-            x=[state, advantage],
-            y=[action])
-        # update exploration rate
-        if n_samples > 100:
-            if reward >= self.best_reward:
-                self.best_reward = reward
-            dr = self.best_reward - reward
-            self.exploration_rate = np.clip(np.exp(-3 * dr), 0.05, 0.4)
-            print(self.exploration_rate)
-            
-    def reset(self):
-        self.state_memory = []
-        self.action_memory = []
-        self.value_memory = []
+        j = self.memory_index
+        assert self.step_index % self.replay_memory_sz == j
+        self.state_memory[j, :] = np.copy(state)
+        self.action_memory[j, :] = np.copy(action)
+        self.value_memory[j] = 0
+        # discount rewards
+        R = reward
+        while True:
+            if R > self.value_memory[j]:
+                self.value_memory[j] = R
+                R = self.value_memory[j] * self.discount_rate
+                j = (j - 1) % self.replay_memory_sz
+                if j == self.memory_index:
+                    break
+            else:
+                break
+        # training
+        if self.step_index >= self.batch_size:
+            # select training batch
+            js = np.concatenate(
+                (
+                    np.array([self.memory_index]),
+                    np.random.uniform(low=0, high=self.step_index, size=self.batch_size - 1).astype(int) % self.replay_memory_sz
+                )
+            )
+            state_batch = self.state_memory[js, :]
+            action_batch = self.action_memory[js, :]
+            value_batch = self.value_memory[js]
+            # train critic
+            cost = self.critic.train_on_batch(x=[state_batch, action_batch], y=value_batch)
+            self.critic_training_memory.append(cost)
+            # train actor
+            predicted_values = self.critic.predict(x=[state_batch, action_batch])
+            cost = self.actor.train_on_batch(x=[state_batch, predicted_values], y=action_batch)
+            #K.get_session().run(fetches=[self.policy_training_function], feed_dict={self.state_ph: state_batch})
+        #
+        self.memory_index = (self.memory_index + 1) % self.replay_memory_sz
+        self.step_index += 1
+
+    def save(self, game_name):
+        self.critic.save(game_name + '_critic.h5')
+        self.actor.save(game_name + '_actor.h5')
+
+    def load(self, game_name):
+        self.critic.load_weights(game_name + '_critic.h5')
+        self.actor.load_weights(game_name + '_actor.h5')
