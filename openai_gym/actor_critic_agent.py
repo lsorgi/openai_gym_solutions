@@ -7,7 +7,7 @@ from keras import backend as K
 import tensorflow as tf
 
 import numpy as np
-import random
+import os
 
 
 class ActorCriticAgent(object):
@@ -43,7 +43,8 @@ class ActorCriticAgent(object):
         self.batch_size = batch_sz
         self.state_memory = np.zeros(shape=(self.replay_memory_sz, self.state_dim), dtype=float)
         self.action_memory = np.zeros(shape=(self.replay_memory_sz, self.action_dim), dtype=float)
-        self.value_memory = np.zeros(shape=self.replay_memory_sz, dtype=float)
+        self.reward_memory = np.zeros(shape=self.replay_memory_sz, dtype=float)
+        #self.gain_memory = np.zeros(shape=self.replay_memory_sz, dtype=float)
         self.memory_index = 0
         self.step_index = 0
         # build models
@@ -94,16 +95,15 @@ class ActorCriticAgent(object):
 
     def choose_action(self, state: np.array):
         j = (self.memory_index - 1) % self.replay_memory_sz
-        current_value = self.value_memory[j]
-        expected_value_th = current_value + (1.0 - current_value) / 2.0
+        current_value = self.reward_memory[j]
+        value_th = current_value + (1.0 - current_value) / 3.0  # I want to make at least 1/3 of my way to 1
         # try policy
         action = self.policy.predict(x=state[np.newaxis, :])[0]
         expected_value = self.critic.predict(x=[state[np.newaxis, :], action[np.newaxis, :]])[0]
-        if expected_value >= expected_value_th:
+        if expected_value >= value_th:
             return action
         # try random action
-        rng = 1.0 - current_value
-        action = np.array(np.random.uniform(-rng, +rng, size=self.action_dim))
+        action = np.array(np.random.uniform(-1.0, +1.0, size=self.action_dim))
         #
         return action
 
@@ -113,13 +113,13 @@ class ActorCriticAgent(object):
         assert self.step_index % self.replay_memory_sz == j
         self.state_memory[j, :] = np.copy(state)
         self.action_memory[j, :] = np.copy(action)
-        self.value_memory[j] = 0
+        self.reward_memory[j] = 0
         # discount rewards
-        R = reward
+        discounted_reward = reward
         while True:
-            if R > self.value_memory[j]:
-                self.value_memory[j] = R
-                R = self.value_memory[j] * self.discount_rate
+            if discounted_reward >= self.reward_memory[j] and discounted_reward > 1e-2:
+                self.reward_memory[j] = discounted_reward
+                discounted_reward *= self.discount_rate
                 j = (j - 1) % self.replay_memory_sz
                 if j == self.memory_index:
                     break
@@ -136,22 +136,32 @@ class ActorCriticAgent(object):
             )
             state_batch = self.state_memory[js, :]
             action_batch = self.action_memory[js, :]
-            value_batch = self.value_memory[js]
-            # train critic
-            cost = self.critic.train_on_batch(x=[state_batch, action_batch], y=value_batch)
+            reward_batch = self.reward_memory[js]
+            # train critic to learn the state-action gain
+            cost = self.critic.train_on_batch(x=[state_batch, action_batch], y=reward_batch)
             self.critic_training_memory.append(cost)
-            # train actor
-            predicted_values = self.critic.predict(x=[state_batch, action_batch])
-            cost = self.actor.train_on_batch(x=[state_batch, predicted_values], y=action_batch)
+            # train actor based on advantage
+            predicted_value = self.critic.predict(x=[state[np.newaxis, :], action[np.newaxis, :]])[0]
+            if predicted_value > reward:
+                gain = predicted_value - reward
+                advantage = np.divide(gain, (1.0 - reward + 1e-8))
+                cost = self.actor.train_on_batch(x=[state[np.newaxis, :], advantage[np.newaxis, :]], y=action[np.newaxis, :])
             #K.get_session().run(fetches=[self.policy_training_function], feed_dict={self.state_ph: state_batch})
         #
         self.memory_index = (self.memory_index + 1) % self.replay_memory_sz
         self.step_index += 1
 
-    def save(self, game_name):
-        self.critic.save(game_name + '_critic.h5')
-        self.actor.save(game_name + '_actor.h5')
+    def save(self, folder, game_name):
+        os.makedirs(folder, exist_ok=True)
+        filename = os.path.join(folder, game_name + '_critic.h5')
+        self.critic.save(filename)
+        filename = os.path.join(folder, game_name + '_actor.h5')
+        self.actor.save(filename)
 
-    def load(self, game_name):
-        self.critic.load_weights(game_name + '_critic.h5')
-        self.actor.load_weights(game_name + '_actor.h5')
+    def load(self, folder, game_name):
+        filename = os.path.join(folder, game_name + '_critic.h5')
+        if os.path.exists(filename):
+            self.critic.load_weights(filename)
+        filename = os.path.join(folder, game_name + '_actor.h5')
+        if os.path.exists(filename):
+            self.actor.load_weights(filename)
