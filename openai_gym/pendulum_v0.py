@@ -3,7 +3,6 @@ import numpy as np
 import logging
 
 from openai_gym.actor_critic_agent import ActorCriticAgent
-from openai_gym.policy_gradient import Agent
 
 
 class GameNormalizer(object):
@@ -72,44 +71,6 @@ def run_my_actor_critic():
         if controller.step_index % 1000 == 0:
             print(np.median(costs), np.max(costs))
             controller.save('./models/', 'pendulum')
-    env.close()
-
-
-def run_policy_gradient():
-    logging.basicConfig(level=logging.DEBUG)
-    env = gym.make('Pendulum-v0')
-    normalizer = GameNormalizer()
-    state_dim, action_dim = normalizer.game_dimension()
-    controller = Agent(
-        input_dim=state_dim,
-        output_dim=len(GameNormalizer.discrete_action_space),
-        hidden_dims=[12, 12])
-    #
-    env.reset()
-    action = env.action_space.sample()[0]
-    S = []
-    A = []
-    R = []
-    while True:
-        env.render()
-        state, cost, _, _ = env.step([action])
-        reward = np.exp(cost)
-        #
-        S.append(normalizer.normalize_state(state))
-        A.append(normalizer.make_discrete_action(action))
-        R.append(reward)
-        #
-        action_discrete = controller.get_action(normalizer.normalize_state(state))
-        action = normalizer.make_continuous_action(action_discrete)
-        #
-        if len(S) == 100:
-            S = np.array(S)
-            A = np.array(A)
-            R = np.array(R)
-            controller.fit(S, A, R)
-            S = []
-            A = []
-            R = []
     env.close()
 
 
