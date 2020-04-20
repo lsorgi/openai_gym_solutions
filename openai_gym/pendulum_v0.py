@@ -44,17 +44,23 @@ def run_my_actor_critic():
         state_dim=state_dim,
         action_dim=action_dim,
         discount_rate=0.99,
-        hidden_dims=[16, 16],
-        learning_rate=1e-4,
+        hidden_dims=[8, 8],
+        learning_rate=1e-3,
         replay_memory_sz=5000,
         batch_sz=32)
     controller.load('./models/', 'pendulum')
     #
-    env.reset()
-    action = env.action_space.sample()
     costs = list()
     while True:
-        #env.render()
+        if len(costs) == 5000:
+            print(np.median(costs), np.max(costs))
+            controller.save('./models/', 'pendulum')
+            costs = list()
+        if len(costs) == 0:
+            env.reset()
+            controller.reset()
+            action = env.action_space.sample()
+        env.render()
         state, cost, _, _ = env.step(action)
         reward = np.exp(cost)
         controller.train(
@@ -64,13 +70,7 @@ def run_my_actor_critic():
         action = normalizer.denormalize_action(
             controller.choose_action(
                 normalizer.normalize_state(state)))
-        #
         costs.append(cost)
-        if len(costs) > 100:
-            costs.pop(0)
-        if controller.step_index % 1000 == 0:
-            print(np.median(costs), np.max(costs))
-            controller.save('./models/', 'pendulum')
     env.close()
 
 
