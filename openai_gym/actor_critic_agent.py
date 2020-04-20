@@ -159,16 +159,21 @@ class ActorCriticAgent(object):
         os.makedirs(folder, exist_ok=True)
         filename = os.path.join(folder, game_name + '_critic.h5')
         self.critic.save(filename)
+        print('saved model({})'.format(filename))
         filename = os.path.join(folder, game_name + '_actor.h5')
         self.actor.save(filename)
+        print('saved model({})'.format(filename))
+
 
     def load(self, folder, game_name):
         filename = os.path.join(folder, game_name + '_critic.h5')
         if os.path.exists(filename):
             self.critic.load_weights(filename)
+            print('loaded model({})'.format(filename))
         filename = os.path.join(folder, game_name + '_actor.h5')
         if os.path.exists(filename):
             self.actor.load_weights(filename)
+            print('loaded model({})'.format(filename))
 
     def reset(self):
         self.state_memory = np.zeros(shape=(self.replay_memory_sz, self.state_dim), dtype=float)
