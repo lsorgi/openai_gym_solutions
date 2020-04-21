@@ -52,7 +52,7 @@ def run_my_actor_critic():
     #
     costs = list()
     while True:
-        if len(costs) == 5000:
+        if len(costs) == 500:
             print(np.median(costs), np.max(costs))
             controller.save('./models/', 'pendulum')
             costs = list()

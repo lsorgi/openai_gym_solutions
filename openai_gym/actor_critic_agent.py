@@ -3,9 +3,7 @@ from keras import models
 from keras import optimizers
 from keras import backend as K
 
-
 import tensorflow as tf
-
 import numpy as np
 import os
 
@@ -45,6 +43,7 @@ class ActorCriticAgent(object):
         self.state_memory = np.zeros(shape=(self.replay_memory_sz, self.state_dim), dtype=float)
         self.action_memory = np.zeros(shape=(self.replay_memory_sz, self.action_dim), dtype=float)
         self.reward_memory = np.zeros(shape=self.replay_memory_sz, dtype=float)
+        self.actor_train_list = list()
         self.memory_index = 0
         self.step_index = 0
         # build models
@@ -52,8 +51,6 @@ class ActorCriticAgent(object):
             self.policy, self.critic, self.policy_training_function, self.state_ph = self._build_models(hidden_dims,                                                                                           learning_rate)
         else:
             self.policy, self.critic, self.actor, self.advantage_ph = self._build_models(hidden_dims, learning_rate)
-
-        self.critic_training_memory = list()
 
     def _build_models(self, hidden_dims, learning_rate):
         #
@@ -131,7 +128,7 @@ class ActorCriticAgent(object):
                 break
         # training
         if self.step_index >= self.batch_size:
-            # select training batch
+            # train critic
             js = np.random.uniform(
                 low=0,
                 high=self.step_index,
@@ -139,18 +136,18 @@ class ActorCriticAgent(object):
             state_batch = self.state_memory[js, :]
             action_batch = self.action_memory[js, :]
             reward_batch = self.reward_memory[js]
-            # train critic
             cost = self.critic.train_on_batch(x=[state_batch, action_batch], y=reward_batch)
-            self.critic_training_memory.append(cost)
-            # train actor based on actual gain
+            # train actor
             if ActorCriticAgent._use_K_actor_update_function:
                 K.get_session().run(fetches=[self.policy_training_function], feed_dict={self.state_ph: state_batch})
             else:
-                cost = self.actor.train_on_batch(x=[state_batch, reward_batch], y=action_batch)
-                #predicted_value = self.critic.predict(x=[state[np.newaxis, :], action[np.newaxis, :]])[0]
-                #if predicted_value >= reward:
+                #self.actor.train_on_batch(x=[state_batch, reward_batch], y=action_batch)
+                predicted_value = self.critic.predict(x=[state[np.newaxis, :], action[np.newaxis, :]])[0]
+                if predicted_value >= reward:
+                    self.actor.train_on_batch(x=[state[np.newaxis, :], predicted_value], y=action[np.newaxis, :])
                 #    advantage = np.divide(predicted_value, (1.0 - reward + 1e-8))
                 #    cost = self.actor.train_on_batch(x=[state[np.newaxis, :], advantage[np.newaxis, :]], y=action[np.newaxis, :])
+
         #
         self.memory_index = (self.memory_index + 1) % self.replay_memory_sz
         self.step_index += 1
@@ -163,7 +160,6 @@ class ActorCriticAgent(object):
         filename = os.path.join(folder, game_name + '_actor.h5')
         self.actor.save(filename)
         print('saved model({})'.format(filename))
-
 
     def load(self, folder, game_name):
         filename = os.path.join(folder, game_name + '_critic.h5')
