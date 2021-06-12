@@ -44,32 +44,37 @@ def run_my_actor_critic():
         state_dim=state_dim,
         action_dim=action_dim,
         discount_rate=0.99,
-        hidden_dims=[8, 8],
-        learning_rate=1e-3,
+        hidden_dims=[6],
+        learning_rate=1e-2,
         replay_memory_sz=5000,
         batch_sz=32)
     controller.load('./models/', 'pendulum')
     #
     costs = list()
+    controller.reset()
+    state = env.reset()
     while True:
-        if len(costs) == 500:
-            print(np.median(costs), np.max(costs))
-            controller.save('./models/', 'pendulum')
-            costs = list()
-        if len(costs) == 0:
-            env.reset()
-            controller.reset()
-            action = env.action_space.sample()
         env.render()
+        state_norm = normalizer.normalize_state(state)
+        action_norm = controller.choose_action(state_norm)
+        if action_norm is None:
+            action = np.array([0, 0])
+        else:
+            action = normalizer.denormalize_action(action_norm)
         state, cost, _, _ = env.step(action)
         reward = np.exp(cost)
-        controller.train(
-            normalizer.normalize_state(state),
-            normalizer.normalize_action(action),
-            reward)
-        action = normalizer.denormalize_action(
-            controller.choose_action(
-                normalizer.normalize_state(state)))
+        controller.train(state_norm, action_norm, reward)
+
+        if len(costs) == 5000:
+            print(np.median(costs), np.max(costs))
+            costs = list()
+            #controller.save('./models/', 'pendulum')
+
+        #if len(costs) == 0:
+        #    env.reset()
+        #    controller.reset()
+        #    action = env.action_space.sample()
+
         costs.append(cost)
     env.close()
 
